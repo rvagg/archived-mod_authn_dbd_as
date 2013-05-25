@@ -31,6 +31,7 @@ module AP_MODULE_DECLARE_DATA authn_dbd_module;
 typedef struct {
     const char *user;
     const char *realm;
+    const char *auth;
 } authn_dbd_conf;
 typedef struct {
     const char *label;
@@ -53,6 +54,7 @@ static void *authn_dbd_merge_conf(apr_pool_t *pool, void *BASE, void *ADD)
     authn_dbd_conf *ret = apr_palloc(pool, sizeof(authn_dbd_conf));
     ret->user = (add->user == NULL) ? base->user : add->user;
     ret->realm = (add->realm == NULL) ? base->realm : add->realm;
+    ret->auth = (add->auth == NULL) ? base->auth : add->auth;
     return ret;
 }
 static const char *authn_dbd_prepare(cmd_parms *cmd, void *cfg, const char *query)
@@ -82,6 +84,9 @@ static const command_rec authn_dbd_cmds[] =
     AP_INIT_TAKE1("AuthDBDUserRealmQuery", authn_dbd_prepare,
                   (void *)APR_OFFSETOF(authn_dbd_conf, realm), ACCESS_CONF,
                   "Query used to fetch password for user+realm"),
+    AP_INIT_TAKE1("AuthDBDFullAuthQuery", authn_dbd_prepare,
+                  (void *)APR_OFFSETOF(authn_dbd_conf, auth), ACCESS_CONF,
+                  "Query used to check auth for a user+password"),
     {NULL}
 };
 static authn_status authn_dbd_password(request_rec *r, const char *user,
@@ -103,21 +108,24 @@ static authn_status authn_dbd_password(request_rec *r, const char *user,
         return AUTH_GENERAL_ERROR;
     }
 
-    if (conf->user == NULL) {
+    if (conf->user == NULL && conf->auth == NULL) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                      "No AuthDBDUserPWQuery has been specified");
+                      "No AuthDBDUserPWQuery or AuthDBDFullAuthQuery has been specified");
         return AUTH_GENERAL_ERROR;
     }
 
-    statement = apr_hash_get(dbd->prepared, conf->user, APR_HASH_KEY_STRING);
+    statement = apr_hash_get(dbd->prepared,
+        conf->user != NULL ? conf->user : conf->auth,
+        APR_HASH_KEY_STRING);
     if (statement == NULL) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "A prepared statement could not be found for "
-                      "AuthDBDUserPWQuery with the key '%s'", conf->user);
+                      "AuthDBDUserPWQuery or AuthDBDFullAuthQuery with the key '%s'",
+                      conf->user);
         return AUTH_GENERAL_ERROR;
     }
     if (apr_dbd_pvselect(dbd->driver, r->pool, dbd->handle, &res, statement,
-                              0, user, NULL) != 0) {
+                              0, user, password, NULL) != 0) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "Query execution error looking up '%s' "
                       "in database", user);
@@ -168,11 +176,12 @@ static authn_status authn_dbd_password(request_rec *r, const char *user,
         return AUTH_USER_NOT_FOUND;
     }
 
-    rv = apr_password_validate(password, dbd_password);
-
-    if (rv != APR_SUCCESS) {
-        return AUTH_DENIED;
-    }
+    if (conf->user != NULL) {
+        rv = apr_password_validate(password, dbd_password);
+        if (rv != APR_SUCCESS) {
+            return AUTH_DENIED;
+        }
+    } // else conf->auth and we get a db_password then we've passed
 
     return AUTH_GRANTED;
 }
