@@ -1,0 +1,4 @@
+mod_authn_dbd.la
+mod_authn_dbd.lo
+mod_authn_dbd.slo
+.libs/
